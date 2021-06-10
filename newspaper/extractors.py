@@ -788,7 +788,8 @@ class ContentExtractor(object):
             word_stats = self.stopwords_class(language=self.language). \
                 get_stopword_count(text_node)
             high_link_density = self.is_highlink_density(node)
-            if word_stats.get_stopword_count() > 2 and not high_link_density:
+            if (word_stats.get_stopword_count() > 2 and not high_link_density) \
+                    or self.get_ancestor_with_tag(node, 'article') is not None:
                 nodes_with_text.append(node)
 
         nodes_number = len(nodes_with_text)
@@ -889,6 +890,30 @@ class ContentExtractor(object):
                 if word_stats.get_stopword_count() > minimum_stopword_count:
                     return True
                 steps_away += 1
+        return False
+
+    @staticmethod
+    def get_ancestor_with_tag(node, tag):
+        """A method to return the first ancestor element of node with type tag."""
+        current = node
+        while current is not None:
+            current = current.getparent()
+            if current is None:
+                return None
+            if current.tag == tag:
+                return current
+        return None
+
+    @staticmethod
+    def is_descendant_of(node, nodes):
+        """A method to check if any element in nodes is an ancestor of a given node."""
+        current = node
+        while current is not None:
+            current = current.getparent()
+            if current is None:
+                return False
+            if current in nodes:
+                return True
         return False
 
     def walk_siblings(self, node):
@@ -1032,14 +1057,17 @@ class ContentExtractor(object):
         return float(gravity_score)
 
     def nodes_to_check(self, doc):
-        """Returns a list of nodes we want to search
-        on like paragraphs and tables
-        """
-        nodes_to_check = []
-        for tag in ['p', 'pre', 'td']:
-            items = self.parser.getElementsByTag(doc, tag=tag)
-            nodes_to_check += items
-        return nodes_to_check
+        """Returns a list of nodes we want to search on like paragraphs and tables."""
+        tags = ['p', 'pre', 'td']
+        selector = '|'.join('descendant-or-self::{}'.format(t) for t in tags)
+        # Some li's have content not captured from just p-elements but they may cause overlapping text
+        # Retrieve li's that are not related to the p-elements we will be retrieving anyway
+        selector += '|descendant-or-self::li[not(descendant-or-self::p)]'
+        elems = doc.xpath(selector)
+        # remove the root node
+        if doc in elems:
+            elems.remove(doc)
+        return elems
 
     def is_table_and_no_para_exist(self, e):
         sub_paragraphs = self.parser.getElementsByTag(e, tag='p')
