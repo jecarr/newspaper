@@ -778,10 +778,6 @@ class ContentExtractor(object):
         i = 0
         parent_nodes = []
         nodes_with_text = []
-        # A dictionary where each nodes_with_text element (node a) is mapped to indices of parent_nodes. This is where
-        # the elements the indices provides (nodes b, c, etc) are such that:
-        # nodes b and c = parents or grandparents of node a
-        nodes_wtext_parent_map = {}
 
         for node in nodes_to_check:
             text_node = self.parser.getText(node)
@@ -796,7 +792,7 @@ class ContentExtractor(object):
         negative_scoring = 0
         bottom_negativescore_nodes = float(nodes_number) * 0.25
 
-        for idx, node in enumerate(nodes_with_text):
+        for node in nodes_with_text:
             boost_score = float(0)
             # boost
             if self.is_boostable(node):
@@ -822,46 +818,45 @@ class ContentExtractor(object):
             self.update_score(parent_node, upscore)
             self.update_node_count(parent_node, 1)
 
-            # For this index in the loop, we haven't added any parent nodes yet
-            nodes_wtext_parent_map[idx] = []
-
             if parent_node not in parent_nodes:
-                # Map this index of nodes_with_text to the index of the parent when added to parent_nodes
-                nodes_wtext_parent_map[idx].append(len(parent_nodes))
                 parent_nodes.append(parent_node)
 
             # Parent of parent node
             parent_parent_node = self.parser.getParent(parent_node)
             if parent_parent_node is not None:
-                self.update_node_count(parent_parent_node, 1)
                 self.update_score(parent_parent_node, upscore / 2)
+                self.update_node_count(parent_parent_node, 1)
                 if parent_parent_node not in parent_nodes:
-                    # Update nodes_wtext_parent_map in same manner as before
-                    nodes_wtext_parent_map[idx].append(len(parent_nodes))
                     parent_nodes.append(parent_parent_node)
+
             cnt += 1
             i += 1
 
         top_node_score = 0
-        # The index of top_node within parent_nodes
-        top_node_index = -1
-        for idx, e in enumerate(parent_nodes):
+        for e in parent_nodes:
             score = self.get_score(e)
 
             if score > top_node_score or top_node is None:
                 top_node = e
-                top_node_index = idx
                 top_node_score = score
 
-        # Nodes with text that are not related to top_node
+        # Now that top_node has been determined, loop through all the nodes again to get all the nodes that aren't
+        # related to the top_node
         unrelated_nodes_wtext = []
-        # Now that top_node has been determined, loop through parent mappings to populate unrelated_nodes_wtext
-        for nodes_wtext_idx in nodes_wtext_parent_map:
-            # Obtain the indices of the parents for this node (index)
-            parents = nodes_wtext_parent_map[nodes_wtext_idx]
-            # If the top node is unrelated, add it to the list
-            if top_node_index not in parents:
-                unrelated_nodes_wtext.append(nodes_with_text[nodes_wtext_idx])
+        for node in nodes_with_text:
+            if node == top_node:
+                continue
+
+            is_related_to_top_node = False
+            parent_node = self.parser.getParent(node)
+            while parent_node is not None:
+                if parent_node == top_node:
+                    is_related_to_top_node = True
+                    break
+                parent_node = self.parser.getParent(parent_node)
+
+            if not is_related_to_top_node:
+                unrelated_nodes_wtext.append(node)
 
         return top_node, unrelated_nodes_wtext
 
