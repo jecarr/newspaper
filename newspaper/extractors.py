@@ -778,24 +778,21 @@ class ContentExtractor(object):
         i = 0
         parent_nodes = []
         nodes_with_text = []
-        # A dictionary where each nodes_with_text element (node a) is mapped to indices of parent_nodes. This is where
-        # the elements the indices provides (nodes b, c, etc) are such that:
-        # nodes b and c = parents or grandparents of node a
-        nodes_wtext_parent_map = {}
 
         for node in nodes_to_check:
             text_node = self.parser.getText(node)
             word_stats = self.stopwords_class(language=self.language). \
                 get_stopword_count(text_node)
             high_link_density = self.is_highlink_density(node)
-            if word_stats.get_stopword_count() > 2 and not high_link_density:
+            if (word_stats.get_stopword_count() > 2 and not high_link_density) \
+                    or self.get_ancestor_with_tag(node, 'article') is not None:
                 nodes_with_text.append(node)
 
         nodes_number = len(nodes_with_text)
         negative_scoring = 0
         bottom_negativescore_nodes = float(nodes_number) * 0.25
 
-        for idx, node in enumerate(nodes_with_text):
+        for node in nodes_with_text:
             boost_score = float(0)
             # boost
             if self.is_boostable(node):
@@ -821,46 +818,45 @@ class ContentExtractor(object):
             self.update_score(parent_node, upscore)
             self.update_node_count(parent_node, 1)
 
-            # For this index in the loop, we haven't added any parent nodes yet
-            nodes_wtext_parent_map[idx] = []
-
             if parent_node not in parent_nodes:
-                # Map this index of nodes_with_text to the index of the parent when added to parent_nodes
-                nodes_wtext_parent_map[idx].append(len(parent_nodes))
                 parent_nodes.append(parent_node)
 
             # Parent of parent node
             parent_parent_node = self.parser.getParent(parent_node)
             if parent_parent_node is not None:
-                self.update_node_count(parent_parent_node, 1)
                 self.update_score(parent_parent_node, upscore / 2)
+                self.update_node_count(parent_parent_node, 1)
                 if parent_parent_node not in parent_nodes:
-                    # Update nodes_wtext_parent_map in same manner as before
-                    nodes_wtext_parent_map[idx].append(len(parent_nodes))
                     parent_nodes.append(parent_parent_node)
+
             cnt += 1
             i += 1
 
         top_node_score = 0
-        # The index of top_node within parent_nodes
-        top_node_index = -1
-        for idx, e in enumerate(parent_nodes):
+        for e in parent_nodes:
             score = self.get_score(e)
 
             if score > top_node_score or top_node is None:
                 top_node = e
-                top_node_index = idx
                 top_node_score = score
 
-        # Nodes with text that are not related to top_node
+        # Now that top_node has been determined, loop through all the nodes again to get all the nodes that aren't
+        # related to the top_node
         unrelated_nodes_wtext = []
-        # Now that top_node has been determined, loop through parent mappings to populate unrelated_nodes_wtext
-        for nodes_wtext_idx in nodes_wtext_parent_map:
-            # Obtain the indices of the parents for this node (index)
-            parents = nodes_wtext_parent_map[nodes_wtext_idx]
-            # If the top node is unrelated, add it to the list
-            if top_node_index not in parents:
-                unrelated_nodes_wtext.append(nodes_with_text[nodes_wtext_idx])
+        for node in nodes_with_text:
+            if node == top_node:
+                continue
+
+            is_related_to_top_node = False
+            parent_node = self.parser.getParent(node)
+            while parent_node is not None:
+                if parent_node == top_node:
+                    is_related_to_top_node = True
+                    break
+                parent_node = self.parser.getParent(parent_node)
+
+            if not is_related_to_top_node:
+                unrelated_nodes_wtext.append(node)
 
         return top_node, unrelated_nodes_wtext
 
@@ -889,6 +885,30 @@ class ContentExtractor(object):
                 if word_stats.get_stopword_count() > minimum_stopword_count:
                     return True
                 steps_away += 1
+        return False
+
+    @staticmethod
+    def get_ancestor_with_tag(node, tag):
+        """A method to return the first ancestor element of node with type tag."""
+        current = node
+        while current is not None:
+            current = current.getparent()
+            if current is None:
+                return None
+            if current.tag == tag:
+                return current
+        return None
+
+    @staticmethod
+    def is_descendant_of(node, nodes):
+        """A method to check if any element in nodes is an ancestor of a given node."""
+        current = node
+        while current is not None:
+            current = current.getparent()
+            if current is None:
+                return False
+            if current in nodes:
+                return True
         return False
 
     def walk_siblings(self, node):
@@ -1032,14 +1052,17 @@ class ContentExtractor(object):
         return float(gravity_score)
 
     def nodes_to_check(self, doc):
-        """Returns a list of nodes we want to search
-        on like paragraphs and tables
-        """
-        nodes_to_check = []
-        for tag in ['p', 'pre', 'td']:
-            items = self.parser.getElementsByTag(doc, tag=tag)
-            nodes_to_check += items
-        return nodes_to_check
+        """Returns a list of nodes we want to search on like paragraphs and tables."""
+        tags = ['p', 'pre', 'td']
+        selector = '|'.join('descendant-or-self::{}'.format(t) for t in tags)
+        # Some li's have content not captured from just p-elements but they may cause overlapping text
+        # Retrieve li's that are not related to the p-elements we will be retrieving anyway
+        selector += '|descendant-or-self::li[not(descendant-or-self::p)]'
+        elems = doc.xpath(selector)
+        # remove the root node
+        if doc in elems:
+            elems.remove(doc)
+        return elems
 
     def is_table_and_no_para_exist(self, e):
         sub_paragraphs = self.parser.getElementsByTag(e, tag='p')

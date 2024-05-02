@@ -190,7 +190,7 @@ class Parser(object):
         return node.getparent()
 
     @classmethod
-    def remove(cls, node):
+    def remove(cls, node, keep_node_tail=True):
         parent = node.getparent()
         if parent is not None:
             if node.tail:
@@ -198,11 +198,14 @@ class Parser(object):
                 if prev is None:
                     if not parent.text:
                         parent.text = ''
-                    parent.text += ' ' + node.tail
+                    # keeping the node's tail before deleting
+                    if keep_node_tail:
+                        parent.text += ' ' + node.tail
                 else:
                     if not prev.tail:
                         prev.tail = ''
-                    prev.tail += ' ' + node.tail
+                    if keep_node_tail:
+                        prev.tail += ' ' + node.tail
             node.clear()
             parent.remove(node)
 
@@ -214,6 +217,11 @@ class Parser(object):
     def getText(cls, node):
         txts = [i for i in node.itertext()]
         return text.innerTrim(' '.join(txts).strip())
+
+    @classmethod
+    def getTextList(cls, node):
+        txts = [i for i in node.itertext()]
+        return [text.innerTrim(x.strip()) for x in txts if len(text.innerTrim(x.strip()))]
 
     @classmethod
     def previousSiblings(cls, node):

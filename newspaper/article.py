@@ -278,7 +278,8 @@ class Article(object):
             self.top_node = self.extractor.post_cleanup(self.top_node)
             self.clean_top_node = copy.deepcopy(self.top_node)
 
-            text, article_html = output_formatter.get_formatted(self.top_node, extra_nodes)
+            initial_text = self.extractor.parser.getTextList(self.doc)
+            text, article_html = output_formatter.get_formatted(self.top_node, extra_nodes, initial_text=initial_text)
             self.set_article_html(article_html)
             self.set_text(text)
 

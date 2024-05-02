@@ -38,6 +38,16 @@ def _update_text_list(txts, to_add, index=None):
         txts.extend(to_add)
 
 
+# A small method to check if any strings in one list are in another.
+# Its matching strings and index positions are returned.
+def _get_string_list_matches(find_list, find_in_list):
+    match = set(find_list).intersection(find_in_list)
+    found_idxs = []
+    for m in match:
+        found_idxs.append(find_in_list.index(m))
+    return match, found_idxs
+
+
 class OutputFormatter(object):
 
     def __init__(self, config, extractor):
@@ -61,7 +71,7 @@ class OutputFormatter(object):
     def get_top_node(self):
         return self.top_node
 
-    def get_formatted(self, top_node, extra_nodes=[]):
+    def get_formatted(self, top_node, extra_nodes=[], initial_text=[]):
         """Returns the body text of an article, and also the body article
         html if specified. Returns in (text, html) form
         """
@@ -76,10 +86,10 @@ class OutputFormatter(object):
         self.replace_with_text()
         self.remove_empty_tags()
         self.remove_trailing_media_div()
-        text, html = self.convert_to_text(extra_nodes, top_node_copy)
+        text, html = self.convert_to_text(extra_nodes, top_node_copy, initial_text)
         return (text, html)
 
-    def convert_to_text(self, extra_nodes, html_to_update):
+    def convert_to_text(self, extra_nodes, html_to_update, initial_txts):
         # The current list of texts to be used for a final combined, joined text
         txts = []
         # Obtain the text based on top_node
@@ -91,44 +101,98 @@ class OutputFormatter(object):
                 txt = None
             _update_text_list(txts, _prepare_txt(txt))
         # Factor in any missing text before returning final result
-        return self.add_missing_text(txts, extra_nodes, html_to_update)
+        return self.add_missing_text(txts, initial_txts, extra_nodes, html_to_update)
 
-    def add_missing_text(self, txts, extra_nodes, html_to_update):
+    def add_missing_text(self, txts, initial_txts, extra_nodes, html_to_update):
         """A method to return (text, html) given the current text and html so far (txts list and html_to_update).
         The method uses extra_nodes to consider any text that needs to be added before returning final text and html."""
         # Keep track of the current index we are on for the text and html
         current_idx, html_idx = 0, 0
+        # These are tags we want to closely check
+        check_tags, check_tag_sets = ['table', 'li'], {}
+        for ct in check_tags:
+            check_tag_sets[ct] = set()
         # For each additional node we have...
         for extra in extra_nodes:
+            current_text = extra.text_content()
             # Ignore non-text nodes or nodes with a high link density
-            if extra.text is None or self.extractor.is_highlink_density(extra):
+            if current_text is None or not len(str(current_text).strip()) or self.extractor.is_highlink_density(extra):
                 continue
             # Prepare the node's text if it were to be added; count the length of the list to be added
-            stripped_txts = _prepare_txt(extra.text)
+            stripped_txts = _prepare_txt(str(current_text))
             txt_count = len(stripped_txts)
             # Check the text is not already within the final txts list
-            match = set(stripped_txts).intersection(txts)
+            match, found_idxs = _get_string_list_matches(stripped_txts, txts)
             node_found = bool(len(match))
             # In regards to the html, take a copy of this node before parsing any hyperlinks
             extra_pre_parsed = deepcopy(extra)
+            # If extra is represented by a grouped element
+            grouped_elem = None
+            # If we are adding this missing text
+            adding = True
             self.parser.stripTags(extra, 'a')
             # If the text is already in the txts list, update current_idx to be where the node's text is + 1
             if node_found:
-                # In case of multiple entries for this node's text, gather all indices of the text in txts and
-                # find the max (latest) entry
-                found_idxs = []
-                for m in match:
-                    found_idxs.append(txts.index(m))
+                # In case of multiple entries for this node's text, use the max (latest) entry
                 current_idx = max(found_idxs) + 1
             # If the current node's text has not been added to the final txts list
             else:
-                _update_text_list(txts, _prepare_txt(extra.text), index=current_idx)
-                # Update current_idx to be incremented by how many entries were added to txts
-                current_idx += txt_count
-            # Update the html if it should be updated
+                # Before adding, loop through each tag we want to check for
+                for ct, ct_set in check_tag_sets.items():
+                    # Check if extra is a descendant of checked elements seen so far or has any ancestor of type tag
+                    head_elem = self.extractor.get_ancestor_with_tag(extra, ct)
+                    is_related = self.extractor.is_descendant_of(extra, ct_set)
+                    # If there is a relation (e.g. a <td> in a <table>), we're not adding
+                    if is_related:
+                        adding = False
+                    # If we didn't find an ancestor of type tag but extra is, make this the head_elem
+                    if head_elem is None and extra.tag == ct:
+                        head_elem = extra
+                    # If we have a head_elem and there was no relation with previously-seen elements...
+                    if head_elem is not None and not is_related:
+                        # Check we haven't seen head_elem before; if not, prepare it for adding to txts
+                        if head_elem not in ct_set:
+                            # We don't want innerTrim called on table elements
+                            stripped_txts = [str(head_elem.text_content()).strip()] if ct == 'table' \
+                                else _prepare_txt(str(head_elem.text_content()))
+                            txt_count = len(stripped_txts)
+                            ct_set.add(head_elem)
+                            grouped_elem = head_elem
+                        # If we have processed head_elem before, we are not adding its text
+                        else:
+                            adding = False
+                if adding:
+                    # Before adding, check the order is ok. See this current text's position in initial_txts
+                    match_init, found_idxs_init = _get_string_list_matches(stripped_txts, initial_txts)
+                    # If it has a position in initial_txts...
+                    if match_init:
+                        # Loop through each text in txts and also check its position in initial_txts
+                        for t_idx, t in enumerate(txts):
+                            match_t, found_idxs_t = _get_string_list_matches([t], initial_txts)
+                            # If it is found in initial_txts...
+                            if match_t:
+                                # Check that if the index of this t is before current_idx, it is the same for its index
+                                # in initial_txts (it should be before the current text's position in initial_txts)
+                                precedes = t_idx <= current_idx and all(x <= y for x in found_idxs_t for y in found_idxs_init)
+                                # And vice-versa
+                                follows = t_idx >= current_idx and all(x >= y for x in found_idxs_t for y in found_idxs_init)
+                                # If neither were true, then there is a mis-ordering
+                                if not precedes and not follows:
+                                    # Make the current index the position of t in txts
+                                    current_idx = t_idx
+                    # Proceed to update txts
+                    _update_text_list(txts, stripped_txts, index=current_idx)
+                    # Update current_idx to be incremented by how many entries were added to txts
+                    current_idx += txt_count
+            # Update the html if it should be updated - use a grouped elem if we have one else use extra_pre_parsed
             if self.config.keep_article_html:
-                html_idx, html_to_update = self.insert_missing_html(extra_pre_parsed, html_to_update, html_idx,
-                                                                    node_found, stripped_txts[0])
+                if node_found:
+                    html_idx, html_to_update = self.insert_missing_html(extra_pre_parsed, html_to_update, html_idx,
+                                                                        node_found, stripped_txts[0])
+                elif adding:
+                    html_idx, html_to_update = self.insert_missing_html(
+                        grouped_elem if grouped_elem is not None else extra_pre_parsed, html_to_update,
+                        html_idx, node_found, stripped_txts[0])
         # Return final string based on txts list and html string
         return '\n\n'.join(txts), self.convert_to_html(html_to_update)
 
@@ -209,7 +273,8 @@ class OutputFormatter(object):
             for li in li_list[:-1]:
                 li.text = self.parser.getText(li) + r'\n'
                 for c in self.parser.getChildren(li):
-                    self.parser.remove(c)
+                    # <strong> elements in li's will cause repeating text if its contents are preserved
+                    self.parser.remove(c, keep_node_tail=c.tag != 'strong')
 
     def links_to_text(self):
         """Cleans up and converts any nodes that should be considered
