@@ -399,8 +399,7 @@ class Article(object):
         """Must be called after computing HTML/final URL
         """
         res_path = self.get_resource_path()
-        if not os.path.exists(res_path):
-            os.mkdir(res_path)
+        os.makedirs(res_path, exist_ok=True)
 
     def get_resource_path(self):
         """Every article object has a special directory to store data in from
@@ -408,8 +407,7 @@ class Article(object):
         """
         res_dir_fn = 'article_resources'
         resource_directory = os.path.join(settings.TOP_DIRECTORY, res_dir_fn)
-        if not os.path.exists(resource_directory):
-            os.mkdir(resource_directory)
+        os.makedirs(resource_directory, exist_ok=True)
         dir_path = os.path.join(resource_directory, '%s_' % self.link_hash)
         return dir_path
 
